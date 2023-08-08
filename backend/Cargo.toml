@@ -1,0 +1,13 @@
+[package]
+name = "backend"
+version = "0.1.0"
+edition = "2021"
+license = "GPLv3"
+
+[dependencies]
+ndarray = { version = "0.15.4" }
+ndarray-ndimage = "0.2"
+wonnx = { git = "https://github.com/mayjs/wonnx.git", branch = "temporary_combination_for_neuratable" }
+image = "0.24.2"
+thiserror = "1.0"
+log = "0.4.19"

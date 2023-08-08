@@ -1,0 +1,5 @@
+[toolchain]
+channel = "stable"
+components = []
+targets = [ "x86_64-unknown-linux-gnu" ]
+profile = "default"
