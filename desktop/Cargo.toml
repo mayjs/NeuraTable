@@ -7,7 +7,7 @@ license = "GPLv3"
 [dependencies]
 pollster = "0.3.0"
 backend = { path = "../backend" }
-wonnx = { git = "https://github.com/mayjs/wonnx.git", branch = "temporary_combination_for_neuratable" }
+wonnx = { git = "https://github.com/mayjs/wonnx.git", branch = "feature/implement_conv_transpose" }
 image = "0.24.2"
 protobuf = { version = "2.27.1", features = ["with-bytes"] }
 argh = "0.1.11"

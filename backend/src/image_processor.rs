@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use super::image_chunk_iterator::ImageChunkGeneratorBuilder;
+use super::model_runner::ModelRunner;
 use image::{ImageBuffer, Rgb};
 use ndarray::Array3;
 use thiserror::Error;
@@ -27,82 +28,30 @@ pub enum ImageProcessingError {
 }
 
 pub struct ImageProcessor {
-    wonnx_session: Session,
+    runner: ModelRunner,
     chunk_size: usize,
-    input_name: String,
-    output_name: String,
     chunk_padding: usize,
     chunk_overlap: usize,
 }
 
 impl ImageProcessor {
-    fn get_graph_input(graph: &GraphProto) -> Result<(Shape, String), ImageProcessingError> {
-        let inputs = graph.get_input();
-
-        if inputs.len() > 1 {
-            return Err(ImageProcessingError::ModelInputError);
-        }
-        let input_shape = inputs[0].get_shape()?;
-        let input_name = inputs[0].get_name().to_owned();
-
-        if input_shape.dim(0) != 1
-            || input_shape.dim(1) != 3
-            || input_shape.dim(2) != input_shape.dim(3)
-        {
-            return Err(ImageProcessingError::InvalidInputShape(input_shape));
-        }
-
-        Ok((input_shape, input_name))
-    }
-
-    fn get_matching_output(
-        graph: &GraphProto,
-        input_shape: &Shape,
-    ) -> Result<String, ImageProcessingError> {
-        graph
-            .get_output()
-            .iter()
-            .filter(|o| o.get_shape().map(|s| &s == input_shape).unwrap_or_default())
-            .next()
-            .map(|o| o.get_name().to_owned())
-            .ok_or_else(|| ImageProcessingError::NoSuitableOutput)
-    }
-
-    pub async fn new(model: onnx::ModelProto) -> Result<ImageProcessor, ImageProcessingError> {
-        let graph = model.get_graph();
-
-        let (input_shape, input_name) = Self::get_graph_input(graph)?;
-        let output_name = Self::get_matching_output(graph, &input_shape)?;
-        log::info!("Using output {}", &output_name);
-
-        let chunk_size = input_shape.dim(3) as usize;
-
-        let wonnx_session = Session::from_model(model).await?;
+    pub async fn new(runner: ModelRunner) -> Result<ImageProcessor, ImageProcessingError> {
+        let chunk_size = runner.get_chunksize();
 
         let default_padding = chunk_size / 7; // TODO: This is an experimental value and will probably to
                                               // work for many models
         let default_overlap = default_padding / 10;
 
         Ok(ImageProcessor {
-            wonnx_session,
+            runner,
             chunk_size,
-            input_name,
-            output_name,
             chunk_padding: default_padding,
             chunk_overlap: default_overlap,
         })
     }
 
-    fn get_output_tensor(&self, network_result: &mut HashMap<String, OutputTensor>) -> Array3<f32> {
-        if let OutputTensor::F32(data) = network_result.remove(&self.output_name).unwrap() {
-            Array3::from_shape_vec((3, self.chunk_size, self.chunk_size), data).unwrap()
-        } else {
-            panic!("Unexpected output type!");
-        }
-    }
-
     pub async fn process_image(
-        &self,
+        &mut self,
         image: ImageBuffer<Rgb<u8>, Vec<u8>>,
     ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, ImageProcessingError> {
         let width = image.width() as usize;
@@ -123,17 +72,10 @@ impl ImageProcessor {
         // have to worry about permutation when creating the resulting image
         let mut output_image: Array3<f32> = Array3::zeros((height, width, 3));
 
-        let mut input_data: Array3<f32> = Array3::zeros((3, self.chunk_size, self.chunk_size));
         for (i, chunk) in generator.iter().enumerate() {
             log::info!("Processing chunk {}", i);
-            chunk.chunk.assign_to(&mut input_data);
-            let input_map = HashMap::from([(
-                self.input_name.clone(),
-                input_data.as_slice().unwrap().into(),
-            )]);
 
-            let mut result = self.wonnx_session.run(&input_map).await?;
-            let mut result_tensor = self.get_output_tensor(&mut result);
+            let mut result_tensor = self.runner.process_chunk(chunk.chunk).await.unwrap();
 
             let mut usable_output_chunk = result_tensor.slice_mut(chunk.get_usable_range());
             generator.scale_overlap(&chunk.global_coordinate_offset, &mut usable_output_chunk);
