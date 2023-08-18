@@ -14,8 +14,12 @@ struct RunOnnx {
 }
 
 async fn run(args: RunOnnx) {
-    let model = wonnx::onnx::ModelProto::parse_from_bytes(&std::fs::read(&args.onnx_model).unwrap()).unwrap();
-    let processor = ImageProcessor::new(model).await.unwrap(); 
+    let mut r = std::fs::File::open(&args.onnx_model).unwrap();
+    //let model = wonnx::onnx::ModelProto::parse_from_bytes(&std::fs::read(&args.onnx_model).unwrap()).unwrap();
+
+    let runner = backend::model_runner::ModelRunner::new(&mut r).await.unwrap();
+
+    let mut processor = ImageProcessor::new(runner).await.unwrap();
 
     let input_image = image::open(&args.input_image).unwrap().to_rgb8();
     let output_image = processor.process_image(input_image).await.unwrap();
