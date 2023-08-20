@@ -9,11 +9,13 @@ use wonnx::{
     Session,
 };
 
+use crate::ChunkSize;
+
 #[derive(Debug, Error)]
 pub enum ModelRunnerError {
     #[error("The model has too many inputs")]
     ModelInputError,
-    #[error("The models input is unsupported (a [1,3,h,w] shaped input is required and h must be equal to w)")]
+    #[error("The models input is unsupported (a [1,3,h,w] shaped input is required")]
     InvalidInputShape(Shape),
     #[error("Could not read model parameters")]
     ModelParameterError(#[from] DataTypeError),
@@ -42,11 +44,11 @@ pub enum ModelRunnerBackend {
 
 pub struct ModelRunner {
     backend: ModelRunnerBackend,
-    chunksize: usize,
+    chunksize: ChunkSize,
 }
 
 impl ModelRunner {
-    pub fn get_chunksize(&self) -> usize {
+    pub fn get_chunksize(&self) -> ChunkSize {
         self.chunksize
     }
 
@@ -59,10 +61,7 @@ impl ModelRunner {
         let input_shape = inputs[0].get_shape()?;
         let input_name = inputs[0].get_name().to_owned();
 
-        if input_shape.dim(0) != 1
-            || input_shape.dim(1) != 3
-            || input_shape.dim(2) != input_shape.dim(3)
-        {
+        if input_shape.dim(0) != 1 || input_shape.dim(1) != 3 {
             return Err(ModelRunnerError::InvalidInputShape(input_shape));
         }
 
@@ -82,7 +81,7 @@ impl ModelRunner {
             .ok_or_else(|| ModelRunnerError::NoSuitableOutput)
     }
 
-    pub async fn new<R>(input: &mut R) -> Result<Self, ModelRunnerError>
+    pub async fn new<R>(input: &mut R, force_tract: bool) -> Result<Self, ModelRunnerError>
     where
         R: std::io::Read + std::io::Seek,
     {
@@ -92,61 +91,75 @@ impl ModelRunner {
         let (input_shape, input_name) = Self::get_graph_input(graph)?;
         let output_name = Self::get_matching_output(graph, &input_shape)?;
         log::info!("Using output {}", &output_name);
-        let chunksize = input_shape.dim(3) as usize;
+        let chunksize = ChunkSize {
+            height: input_shape.dim(2) as usize,
+            width: input_shape.dim(3) as usize,
+        };
 
-        match Session::from_model(wonnx_model).await {
-            Ok(session) => Ok(Self {
-                backend: ModelRunnerBackend::WonnxRunner(WonnxRunner {
-                    session,
-                    input_name,
-                    output_name,
-                    input_scratchpad: ndarray::Array3::<f32>::zeros((3, chunksize, chunksize)),
-                }),
-                chunksize,
-            }),
-            Err(err) => {
-                log::error!("Failed to create wonnx session: {}", err);
-                log::error!("Either wonnx doesn't support your model right now or you don't have Vulkan available. We will fall back to tract, but this will be slow!");
-
-                input.rewind().unwrap();
-
-                let tract_model = tract_onnx::onnx()
-                    .model_for_read(input)
-                    .unwrap()
-                    .into_optimized()
-                    .unwrap()
-                    .into_runnable()
-                    .unwrap();
-
-                let infer = move |input: &ndarray::Array3<f32>| {
-                    let shape = input.shape().clone();
-                    let mut result = tract_model
-                        .run(tvec![Into::<Tensor>::into(
-                            input
-                                .clone()
-                                .into_shape((1, shape[0], shape[1], shape[2]))
-                                .unwrap()
-                        )
-                        .into()])
-                        .unwrap();
-                    result
-                        .remove(0)
-                        .into_tensor()
-                        .into_array()
-                        .unwrap()
-                        .into_shape((shape[0], shape[1], shape[2]))
-                        .unwrap()
-                };
-
-                Ok(Self {
-                    backend: ModelRunnerBackend::TractRunner(TractRunner {
-                        model: Box::new(infer),
-                        input_scratchpad: ndarray::Array3::<f32>::zeros((3, chunksize, chunksize)),
-                    }),
-                    chunksize,
-                })
+        if !force_tract {
+            match Session::from_model(wonnx_model).await {
+                Ok(session) => {
+                    return Ok(Self {
+                        backend: ModelRunnerBackend::WonnxRunner(WonnxRunner {
+                            session,
+                            input_name,
+                            output_name,
+                            input_scratchpad: ndarray::Array3::<f32>::zeros((
+                                3,
+                                chunksize.height,
+                                chunksize.width,
+                            )),
+                        }),
+                        chunksize,
+                    })
+                }
+                Err(err) => {
+                    log::error!("Failed to create wonnx session: {}", err);
+                    log::error!("Either wonnx doesn't support your model right now or you don't have Vulkan available. We will fall back to tract, but this will be slow!");
+                }
             }
         }
+        input.rewind().unwrap();
+
+        let tract_model = tract_onnx::onnx()
+            .model_for_read(input)
+            .unwrap()
+            .into_optimized()
+            .unwrap()
+            .into_runnable()
+            .unwrap();
+
+        let infer = move |input: &ndarray::Array3<f32>| {
+            let shape = input.shape().clone();
+            let mut result = tract_model
+                .run(tvec![Into::<Tensor>::into(
+                    input
+                        .clone()
+                        .into_shape((1, shape[0], shape[1], shape[2]))
+                        .unwrap()
+                )
+                .into()])
+                .unwrap();
+            result
+                .remove(0)
+                .into_tensor()
+                .into_array()
+                .unwrap()
+                .into_shape((shape[0], shape[1], shape[2]))
+                .unwrap()
+        };
+
+        Ok(Self {
+            backend: ModelRunnerBackend::TractRunner(TractRunner {
+                model: Box::new(infer),
+                input_scratchpad: ndarray::Array3::<f32>::zeros((
+                    3,
+                    chunksize.height,
+                    chunksize.width,
+                )),
+            }),
+            chunksize,
+        })
     }
 
     pub async fn process_chunk<'a>(

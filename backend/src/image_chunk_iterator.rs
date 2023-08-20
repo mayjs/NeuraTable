@@ -4,13 +4,15 @@ use ndarray::{s, Array3, ArrayView3, ArrayViewMut3, Dim, Ix3, SliceArg};
 use ndarray_ndimage::PadMode;
 use thiserror::Error;
 
+use crate::ChunkSize;
+
 pub struct Finalized;
 
 pub type ImageTensor = Array3<f32>;
 
 pub struct ImageChunkGenerator<M> {
     image_data: ImageTensor,
-    chunksize: usize,
+    chunksize: ChunkSize,
     overlap: usize,
     chunk_padding: usize,
     input_image_resolution: (usize, usize),
@@ -41,8 +43,11 @@ impl<'a> Iterator for ImageChunkIterator<'a> {
     type Item = ImageChunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let useful_chunksize = self.data.chunksize - 2 * self.data.chunk_padding;
-        let step_size = useful_chunksize - self.data.overlap;
+        let useful_chunksize = self
+            .data
+            .chunksize
+            .remaining_area_after_padding(self.data.chunk_padding);
+        let step_size = useful_chunksize.stepsize_with_overlap(self.data.overlap);
 
         if self.current_coords.1 < self.data.input_image_resolution.1 {
             let mut x = self.current_coords.0 + self.data.input_image_padding.0;
@@ -53,18 +58,18 @@ impl<'a> Iterator for ImageChunkIterator<'a> {
 
             let chunk = self.data.image_data.slice(s![
                 ..,
-                y..y + self.data.chunksize,
-                x..x + self.data.chunksize
+                y..y + self.data.chunksize.height,
+                x..x + self.data.chunksize.width,
             ]);
             let global_coordinate_offset = Coords {
                 x: self.current_coords.0,
                 y: self.current_coords.1,
             };
 
-            self.current_coords.0 += step_size;
+            self.current_coords.0 += step_size.width;
             if self.current_coords.0 >= self.data.input_image_resolution.0 {
                 self.current_coords.0 = 0;
-                self.current_coords.1 += step_size;
+                self.current_coords.1 += step_size.height;
             }
 
             Some(ImageChunk {
@@ -80,17 +85,20 @@ impl<'a> Iterator for ImageChunkIterator<'a> {
 
 #[derive(Debug, Clone, Error)]
 pub enum ImageChunkGeneratorError {
-    #[error("Padding {0} exceeds chunksize {1}")]
-    InvalidPaddingValue(usize, usize),
-    #[error("Overlap {0} exceeds usable chunk area {1}")]
-    InvalidOverlapValue(usize, usize),
+    #[error("Padding {0} exceeds chunksize {1:?}")]
+    InvalidPaddingValue(usize, ChunkSize),
+    #[error("Overlap {0} exceeds usable chunk area {1:?}")]
+    InvalidOverlapValue(usize, ChunkSize),
 }
 
 impl ImageChunkGeneratorBuilder {
     pub fn new_from_array(image: ImageTensor) -> Self {
         Self {
             image_data: image,
-            chunksize: 440, // Default values from nind-denoise
+            chunksize: ChunkSize {
+                width: 440,
+                height: 440,
+            }, // Default values from nind-denoise
             overlap: 6,
             chunk_padding: 60,
             input_image_resolution: (0, 0), // We will calculate the actual size of these when
@@ -100,11 +108,11 @@ impl ImageChunkGeneratorBuilder {
         }
     }
 
-    pub fn set_chunksize(&mut self, chunksize: usize) {
+    pub fn set_chunksize(&mut self, chunksize: ChunkSize) {
         self.chunksize = chunksize;
     }
 
-    pub fn with_chunksize(mut self, chunksize: usize) -> Self {
+    pub fn with_chunksize(mut self, chunksize: ChunkSize) -> Self {
         self.set_chunksize(chunksize);
         self
     }
@@ -133,24 +141,31 @@ impl ImageChunkGeneratorBuilder {
             &self.image_data,
             &[
                 [0, 0],
-                [needed_padding, needed_padding],
-                [needed_padding, needed_padding],
+                [needed_padding.height, needed_padding.height],
+                [needed_padding.width, needed_padding.width],
             ],
             PadMode::Reflect,
         );
-        self.input_image_padding = (needed_padding, needed_padding);
+        self.input_image_padding = (needed_padding.width, needed_padding.height);
     }
 
     pub fn finalize(mut self) -> Result<FinalizedImageChunkGenerator, ImageChunkGeneratorError> {
-        if 2 * self.chunk_padding >= self.chunksize {
+        if 2 * self.chunk_padding >= std::cmp::min(self.chunksize.width, self.chunksize.height) {
             return Err(ImageChunkGeneratorError::InvalidPaddingValue(
                 self.chunk_padding,
                 self.chunksize,
             ));
         }
 
-        let usable_output_chunksize = self.chunksize - 2 * self.chunk_padding;
-        if 2 * self.overlap > usable_output_chunksize {
+        let usable_output_chunksize = self
+            .chunksize
+            .remaining_area_after_padding(self.chunk_padding);
+        if 2 * self.overlap
+            > std::cmp::min(
+                usable_output_chunksize.width,
+                usable_output_chunksize.height,
+            )
+        {
             return Err(ImageChunkGeneratorError::InvalidOverlapValue(
                 self.overlap,
                 usable_output_chunksize,
@@ -182,8 +197,8 @@ impl FinalizedImageChunkGenerator {
                 y: self.chunk_padding,
             },
             Coords {
-                x: self.chunksize - self.chunk_padding,
-                y: self.chunksize - self.chunk_padding,
+                x: self.chunksize.width - self.chunk_padding,
+                y: self.chunksize.height - self.chunk_padding,
             },
         )
     }
@@ -202,12 +217,14 @@ impl FinalizedImageChunkGenerator {
         if global_coords.y > 0 {
             *(&mut chunk.slice_mut(s![.., 0..self.overlap, ..])) *= 0.5;
         }
-        if global_coords.x + self.chunksize - 2 * self.chunk_padding < self.input_image_resolution.0
+        if global_coords.x + self.chunksize.width - 2 * self.chunk_padding
+            < self.input_image_resolution.0
         {
             let start = chunk.shape()[2] - self.overlap;
             *(&mut chunk.slice_mut(s![.., .., start..start + self.overlap])) *= 0.5;
         }
-        if global_coords.y + self.chunksize - 2 * self.chunk_padding < self.input_image_resolution.1
+        if global_coords.y + self.chunksize.height - 2 * self.chunk_padding
+            < self.input_image_resolution.1
         {
             let start = chunk.shape()[1] - self.overlap;
             *(&mut chunk.slice_mut(s![.., start..start + self.overlap, ..])) *= 0.5;
@@ -218,11 +235,11 @@ impl FinalizedImageChunkGenerator {
 impl<'a> ImageChunk<'a> {
     pub fn get_usable_range(&self) -> impl SliceArg<Ix3, OutDim = Dim<[usize; 3]>> {
         let width = min(
-            self.gen.chunksize - 2 * self.gen.chunk_padding,
+            self.gen.chunksize.width - 2 * self.gen.chunk_padding,
             self.gen.input_image_resolution.0 - self.global_coordinate_offset.x,
         );
         let height = min(
-            self.gen.chunksize - 2 * self.gen.chunk_padding,
+            self.gen.chunksize.height - 2 * self.gen.chunk_padding,
             self.gen.input_image_resolution.1 - self.global_coordinate_offset.y,
         );
 

@@ -1,6 +1,5 @@
-use backend::image_processor::ImageProcessor;
-use protobuf::Message;
 use argh::FromArgs;
+use backend::image_processor::ImageProcessor;
 
 #[derive(FromArgs, PartialEq, Debug)]
 /// Run a 1:1 ONNX model in chunked mode
@@ -11,13 +10,17 @@ struct RunOnnx {
     input_image: String,
     #[argh(positional)]
     output_image: String,
+    /// whether or not to force CPU processing
+    #[argh(switch)]
+    force_cpu: bool,
 }
 
 async fn run(args: RunOnnx) {
     let mut r = std::fs::File::open(&args.onnx_model).unwrap();
-    //let model = wonnx::onnx::ModelProto::parse_from_bytes(&std::fs::read(&args.onnx_model).unwrap()).unwrap();
 
-    let runner = backend::model_runner::ModelRunner::new(&mut r).await.unwrap();
+    let runner = backend::model_runner::ModelRunner::new(&mut r, args.force_cpu)
+        .await
+        .unwrap();
 
     let mut processor = ImageProcessor::new(runner).await.unwrap();
 
