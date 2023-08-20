@@ -4,7 +4,7 @@ use protobuf::Message;
 use thiserror::Error;
 use tract_onnx::prelude::*;
 use wonnx::{
-    onnx::{self, GraphProto},
+    onnx::GraphProto,
     utils::{DataTypeError, OutputTensor, Shape},
     Session,
 };
