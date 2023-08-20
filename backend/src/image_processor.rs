@@ -1,15 +1,11 @@
-use std::collections::HashMap;
+use crate::ChunkSize;
 
 use super::image_chunk_iterator::ImageChunkGeneratorBuilder;
 use super::model_runner::ModelRunner;
 use image::{ImageBuffer, Rgb};
 use ndarray::Array3;
 use thiserror::Error;
-use wonnx::{
-    onnx::{self, GraphProto},
-    utils::{DataTypeError, OutputTensor, Shape},
-    Session,
-};
+use wonnx::utils::{DataTypeError, Shape};
 
 #[derive(Debug, Error)]
 pub enum ImageProcessingError {
@@ -29,22 +25,24 @@ pub enum ImageProcessingError {
 
 pub struct ImageProcessor {
     runner: ModelRunner,
-    chunk_size: usize,
+    chunksize: ChunkSize,
     chunk_padding: usize,
     chunk_overlap: usize,
 }
 
 impl ImageProcessor {
     pub async fn new(runner: ModelRunner) -> Result<ImageProcessor, ImageProcessingError> {
-        let chunk_size = runner.get_chunksize();
+        let chunksize = runner.get_chunksize();
 
-        let default_padding = chunk_size / 7; // TODO: This is an experimental value and will probably to
+        let min_dim = std::cmp::min(chunksize.width, chunksize.height);
+
+        let default_padding = min_dim / 7; // TODO: This is an experimental value and will probably to
                                               // work for many models
         let default_overlap = default_padding / 10;
 
         Ok(ImageProcessor {
             runner,
-            chunk_size,
+            chunksize,
             chunk_padding: default_padding,
             chunk_overlap: default_overlap,
         })
@@ -63,7 +61,7 @@ impl ImageProcessor {
             .permuted_axes([2, 0, 1]); // The image data comes in HxWxC format, we need CxHxW
 
         let generator = ImageChunkGeneratorBuilder::new_from_array(image_data)
-            .with_chunksize(self.chunk_size)
+            .with_chunksize(self.chunksize)
             .with_chunk_padding(self.chunk_padding)
             .with_overlap(self.chunk_overlap)
             .finalize()?;
@@ -99,4 +97,3 @@ impl ImageProcessor {
         .unwrap())
     }
 }
-
