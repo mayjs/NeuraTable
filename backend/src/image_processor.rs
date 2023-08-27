@@ -25,40 +25,111 @@ pub enum ImageProcessingError {
 
 pub struct ImageProcessor {
     runner: ModelRunner,
+    model_color_model: ImageColorModel,
+    model_input_range: ModelValueRange,
+    model_output_range: ModelValueRange,
     chunksize: ChunkSize,
     chunk_padding: usize,
     chunk_overlap: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageColorModel {
+    RGB,
+    BGR,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelValueMode {
+    /// Values are centered on 0 (and have a negative and positive part)
+    Symmetric,
+    /// Values are not centered on one and are positive
+    Asymmetric,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelValueRange {
+    value_mode: ModelValueMode,
+    max_abs_value: f32,
+}
+
+impl ModelValueRange {
+    pub fn symmetric(max_abs_value: f32) -> Self {
+        Self {
+            value_mode: ModelValueMode::Symmetric,
+            max_abs_value,
+        }
+    }
+
+    pub fn asymmetric(max_abs_value: f32) -> Self {
+        Self {
+            value_mode: ModelValueMode::Asymmetric,
+            max_abs_value,
+        }
+    }
+}
+
 impl ImageProcessor {
-    pub async fn new(runner: ModelRunner) -> Result<ImageProcessor, ImageProcessingError> {
+    pub async fn new(
+        runner: ModelRunner,
+        model_color_model: ImageColorModel,
+        model_input_range: ModelValueRange,
+        model_output_range: ModelValueRange,
+    ) -> Result<ImageProcessor, ImageProcessingError> {
         let chunksize = runner.get_chunksize();
 
         let min_dim = std::cmp::min(chunksize.width, chunksize.height);
 
         let default_padding = min_dim / 7; // TODO: This is an experimental value and will probably to
-                                              // work for many models
+                                           // work for many models
         let default_overlap = default_padding / 10;
 
         Ok(ImageProcessor {
             runner,
+            model_color_model,
+            model_input_range,
+            model_output_range,
             chunksize,
             chunk_padding: default_padding,
             chunk_overlap: default_overlap,
         })
     }
 
+    /// Change the color channel order of an image in RGB to BGR (or vice versa)
+    ///
+    /// The data channel order must be in HxWxC order (i.e. height x width x 3)
+    ///
+    /// This is very inefficient, but to make it more eficient would probably take unsafe code.
+    /// Maybe we could look into adding a "permute_axis" function to ndarray.
+    fn rgb_to_bgr<T>(data: &mut Array3<T>) {
+        log::debug!(
+            "Swapping the first and third index of the third axis in data shape {:?}",
+            data.shape()
+        );
+        for y in 0..data.shape()[0] {
+            for x in 0..data.shape()[1] {
+                data.swap((y, x, 0), (y, x, 2))
+            }
+        }
+    }
+
     pub async fn process_image(
         &mut self,
-        image: ImageBuffer<Rgb<u8>, Vec<u8>>,
-    ) -> Result<ImageBuffer<Rgb<u8>, Vec<u8>>, ImageProcessingError> {
+        image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    ) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, ImageProcessingError> {
         let width = image.width() as usize;
         let height = image.height() as usize;
 
-        let image_data = Array3::from_shape_vec((height, width, 3), image.into_raw())
+        let mut image_data = Array3::from_shape_vec((height, width, 3), image.into_raw())
             .unwrap()
-            .mapv(|v| (v as f32) / 255.0)
-            .permuted_axes([2, 0, 1]); // The image data comes in HxWxC format, we need CxHxW
+            .mapv(|v| ((v as f32) / u16::MAX as f32) * self.model_input_range.max_abs_value);
+        if self.model_input_range.value_mode == ModelValueMode::Symmetric {
+            image_data.map_inplace(|v| *v = (*v * 2f32) - self.model_input_range.max_abs_value);
+        }
+        if self.model_color_model == ImageColorModel::BGR {
+            Self::rgb_to_bgr(&mut image_data);
+        }
+        image_data = image_data.permuted_axes([2, 0, 1]); // The image data comes in HxWxC format, we need CxHxW
 
         let generator = ImageChunkGeneratorBuilder::new_from_array(image_data)
             .with_chunksize(self.chunksize)
@@ -88,7 +159,17 @@ impl ImageProcessor {
             output_range += &usable_output_chunk.permuted_axes([1, 2, 0]);
         }
 
-        let raw_output_image_data = output_image.mapv(|v| (v * 255.0) as u8);
+        log::debug!("Output Mean: {}", output_image.mean().unwrap());
+        if self.model_output_range.value_mode == ModelValueMode::Symmetric {
+            output_image += self.model_output_range.max_abs_value;
+            output_image /= 2.0;
+        }
+
+        let mut raw_output_image_data = output_image
+            .mapv(|v| ((v / self.model_output_range.max_abs_value) * u16::MAX as f32) as u16);
+        if self.model_color_model == ImageColorModel::BGR {
+            Self::rgb_to_bgr(&mut raw_output_image_data);
+        }
         Ok(ImageBuffer::from_raw(
             width as u32,
             height as u32,
