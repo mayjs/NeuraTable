@@ -1,4 +1,4 @@
-use crate::ChunkSize;
+use crate::{model_value_range::ModelValueRange, ChunkSize};
 
 use super::image_chunk_iterator::ImageChunkGeneratorBuilder;
 use super::model_runner::ModelRunner;
@@ -37,36 +37,6 @@ pub struct ImageProcessor {
 pub enum ImageColorModel {
     RGB,
     BGR,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelValueMode {
-    /// Values are centered on 0 (and have a negative and positive part)
-    Symmetric,
-    /// Values are not centered on one and are positive
-    Asymmetric,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelValueRange {
-    value_mode: ModelValueMode,
-    max_abs_value: f32,
-}
-
-impl ModelValueRange {
-    pub fn symmetric(max_abs_value: f32) -> Self {
-        Self {
-            value_mode: ModelValueMode::Symmetric,
-            max_abs_value,
-        }
-    }
-
-    pub fn asymmetric(max_abs_value: f32) -> Self {
-        Self {
-            value_mode: ModelValueMode::Asymmetric,
-            max_abs_value,
-        }
-    }
 }
 
 impl ImageProcessor {
@@ -122,10 +92,7 @@ impl ImageProcessor {
 
         let mut image_data = Array3::from_shape_vec((height, width, 3), image.into_raw())
             .unwrap()
-            .mapv(|v| ((v as f32) / u16::MAX as f32) * self.model_input_range.max_abs_value);
-        if self.model_input_range.value_mode == ModelValueMode::Symmetric {
-            image_data.map_inplace(|v| *v = (*v * 2f32) - self.model_input_range.max_abs_value);
-        }
+            .mapv(|v| self.model_input_range.pixel_value_to_model(v));
         if self.model_color_model == ImageColorModel::BGR {
             Self::rgb_to_bgr(&mut image_data);
         }
@@ -160,13 +127,10 @@ impl ImageProcessor {
         }
 
         log::debug!("Output Mean: {}", output_image.mean().unwrap());
-        if self.model_output_range.value_mode == ModelValueMode::Symmetric {
-            output_image += self.model_output_range.max_abs_value;
-            output_image /= 2.0;
-        }
+        self.model_output_range
+            .normalize_model_value(&mut output_image);
 
-        let mut raw_output_image_data = output_image
-            .mapv(|v| ((v / self.model_output_range.max_abs_value) * u16::MAX as f32) as u16);
+        let mut raw_output_image_data = output_image.mapv(|v| (v * u16::MAX as f32) as u16);
         if self.model_color_model == ImageColorModel::BGR {
             Self::rgb_to_bgr(&mut raw_output_image_data);
         }

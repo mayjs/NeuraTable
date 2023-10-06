@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use argh::FromArgs;
-use backend::image_processor::{ImageColorModel, ImageProcessor, ModelValueRange};
+use backend::image_processor::{ImageColorModel, ImageProcessor};
+use backend::model_value_range::ModelValueRange;
 
 #[derive(Debug, Clone, PartialEq)]
 struct ArgColorModel(ImageColorModel);
@@ -34,6 +35,14 @@ struct RunOnnx {
     /// whether or not to force CPU processing
     #[argh(switch)]
     force_cpu: bool,
+    /// the value range for input values. Can be a positive float number for [0,x] ranges or "+-x"
+    /// for [-x,x] ranges
+    #[argh(option, default = "ModelValueRange::asymmetric(1.0)")]
+    input_range: ModelValueRange,
+    #[argh(option, default = "ModelValueRange::asymmetric(1.0)")]
+    /// the value range for output values. Can be a positive float number for [0,x] ranges or "+-x"
+    /// for [-x,x] ranges
+    output_range: ModelValueRange,
 }
 
 async fn run(args: RunOnnx) {
@@ -43,15 +52,11 @@ async fn run(args: RunOnnx) {
         .await
         .unwrap();
 
-    // FIXME: These must be parsed from arguments
-    let input_range = ModelValueRange::asymmetric(255.0);
-    let output_range = ModelValueRange::asymmetric(255.0);
-
     let mut processor = ImageProcessor::new(
         runner,
         args.model_channel_order.0,
-        input_range,
-        output_range,
+        args.input_range,
+        args.output_range,
     )
     .await
     .unwrap();
