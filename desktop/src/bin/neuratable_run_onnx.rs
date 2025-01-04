@@ -4,6 +4,7 @@ use argh::FromArgs;
 use backend::image_processor::{ImageColorModel, ImageProcessor};
 use backend::model_value_range::ModelValueRange;
 use std::path::Path;
+use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq)]
 struct ArgColorModel(ImageColorModel);
@@ -69,6 +70,22 @@ async fn run(args: RunOnnx) {
     .await
     .unwrap();
 
+    let hasExiftool = Command::new("exiftool").arg("-ver").output().is_ok();
+    if !hasExiftool {
+        log::error!("exiftool could not be executed! Image metadata will be lost after processing!")
+    }
+    let copyMetadata = |source: &str, destination: &str| -> () {
+        if hasExiftool {
+            if Command::new("exiftool")
+                .args(["-overwrite_original", "-tagsFromFile", source, destination])
+                .output()
+                .is_err()
+            {
+                log::error!("Failed to run exiftool for {}", source);
+            }
+        }
+    };
+
     if !args.batch_process {
         let input_image = image::open(&args.input_image).unwrap().to_rgb16();
         let output_image = processor.process_image(input_image).await.unwrap();
@@ -76,6 +93,7 @@ async fn run(args: RunOnnx) {
         // FIXME: For JPG Output, we need to scale the image data back to 8 Bit RGB
         // We need to find a generic way to solve this issue
         output_image.save(&args.output_image).unwrap();
+        copyMetadata(&args.input_image, &args.output_image);
     } else {
         let input_dir = Path::new(&args.input_image);
         let output_dir = Path::new(&args.output_image);
@@ -108,7 +126,12 @@ async fn run(args: RunOnnx) {
                         };
                     let output_image_path = output_dir.join(output_image_filename);
                     let output_image = processor.process_image(input_image).await.unwrap();
-                    output_image.save(output_image_path).unwrap();
+                    output_image.save(&output_image_path).unwrap();
+
+                    copyMetadata(
+                        entry.path().to_string_lossy().as_ref(),
+                        output_image_path.to_string_lossy().as_ref(),
+                    )
                 }
             }
         }
