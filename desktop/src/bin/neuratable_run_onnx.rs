@@ -44,6 +44,9 @@ struct RunOnnx {
     /// a string that will be appended to the filename of batch-processed files
     #[argh(option, short = 's')]
     batch_process_output_suffix: Option<String>,
+    /// if enabled, batch processing will only consider images where the output image does not exist
+    #[argh(switch, short = 'n')]
+    no_overwrite: bool,
     /// the value range for input values. Can be a positive float number for [0,x] ranges or "+-x"
     /// for [-x,x] ranges
     #[argh(option, default = "ModelValueRange::asymmetric(1.0)")]
@@ -70,12 +73,12 @@ async fn run(args: RunOnnx) {
     .await
     .unwrap();
 
-    let hasExiftool = Command::new("exiftool").arg("-ver").output().is_ok();
-    if !hasExiftool {
+    let has_exiftool = Command::new("exiftool").arg("-ver").output().is_ok();
+    if !has_exiftool {
         log::error!("exiftool could not be executed! Image metadata will be lost after processing!")
     }
-    let copyMetadata = |source: &str, destination: &str| -> () {
-        if hasExiftool {
+    let copy_metadata = |source: &str, destination: &str| -> () {
+        if has_exiftool {
             if Command::new("exiftool")
                 .args(["-overwrite_original", "-tagsFromFile", source, destination])
                 .output()
@@ -93,7 +96,7 @@ async fn run(args: RunOnnx) {
         // FIXME: For JPG Output, we need to scale the image data back to 8 Bit RGB
         // We need to find a generic way to solve this issue
         output_image.save(&args.output_image).unwrap();
-        copyMetadata(&args.input_image, &args.output_image);
+        copy_metadata(&args.input_image, &args.output_image);
     } else {
         let input_dir = Path::new(&args.input_image);
         let output_dir = Path::new(&args.output_image);
@@ -106,8 +109,7 @@ async fn run(args: RunOnnx) {
         {
             if let Ok(entry) = maybe_entry {
                 if entry.path().is_file() {
-                    // TODO: We need to check if this is actually an image!
-                    let input_image = image::open(entry.path()).unwrap().to_rgb16();
+                    // TODO: We need to check if the input is actually an image!
                     let output_image_filename =
                         if let Some(suffix) = &args.batch_process_output_suffix {
                             format!(
@@ -125,13 +127,21 @@ async fn run(args: RunOnnx) {
                                 .to_string()
                         };
                     let output_image_path = output_dir.join(output_image_filename);
-                    let output_image = processor.process_image(input_image).await.unwrap();
-                    output_image.save(&output_image_path).unwrap();
+                    if !args.no_overwrite || !output_image_path.exists() {
+                        let input_image = image::open(entry.path()).unwrap().to_rgb16();
+                        let output_image = processor.process_image(input_image).await.unwrap();
+                        output_image.save(&output_image_path).unwrap();
 
-                    copyMetadata(
-                        entry.path().to_string_lossy().as_ref(),
-                        output_image_path.to_string_lossy().as_ref(),
-                    )
+                        copy_metadata(
+                            entry.path().to_string_lossy().as_ref(),
+                            output_image_path.to_string_lossy().as_ref(),
+                        )
+                    } else {
+                        log::info!(
+                            "Skipping {} since the output file for it already exists.",
+                            entry.path().to_string_lossy()
+                        );
+                    }
                 }
             }
         }
