@@ -47,6 +47,9 @@ struct RunOnnx {
     /// if enabled, batch processing will only consider images where the output image does not exist
     #[argh(switch, short = 'n')]
     no_overwrite: bool,
+    /// if specified, this filetype will be used for batch-processed output files instead of reusing the type from the input
+    #[argh(option, short = 't')]
+    batch_process_output_file_extension: Option<String>,
     /// the value range for input values. Can be a positive float number for [0,x] ranges or "+-x"
     /// for [-x,x] ranges
     #[argh(option, default = "ModelValueRange::asymmetric(1.0)")]
@@ -89,8 +92,18 @@ async fn run(args: RunOnnx) {
         }
     };
 
+    let load_image = |p: &str| -> image::DynamicImage {
+        image::open(p).unwrap_or_else(|_| {
+            log::warn!("Trying darktable conversion for {}", p);
+            let tiff_file = tempfile::NamedTempFile::with_suffix(".tif").unwrap();
+            backend::convert_raw(p, tiff_file.path());
+
+            image::open(tiff_file.path()).unwrap()
+        })
+    };
+
     if !args.batch_process {
-        let input_image = image::open(&args.input_image).unwrap().to_rgb16();
+        let input_image = load_image(&args.input_image).to_rgb16();
         let output_image = processor.process_image(input_image).await.unwrap();
 
         // FIXME: For JPG Output, we need to scale the image data back to 8 Bit RGB
@@ -109,6 +122,19 @@ async fn run(args: RunOnnx) {
         {
             if let Ok(entry) = maybe_entry {
                 if entry.path().is_file() {
+                    let extension = args
+                        .batch_process_output_file_extension
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            entry
+                                .path()
+                                .extension()
+                                .unwrap()
+                                .to_string_lossy()
+                                .to_string()
+                        });
+
                     // TODO: We need to check if the input is actually an image!
                     let output_image_filename =
                         if let Some(suffix) = &args.batch_process_output_suffix {
@@ -116,7 +142,7 @@ async fn run(args: RunOnnx) {
                                 "{}{}.{}",
                                 entry.path().file_stem().unwrap().to_string_lossy(),
                                 suffix,
-                                entry.path().extension().unwrap().to_string_lossy()
+                                extension
                             )
                         } else {
                             entry
@@ -128,7 +154,7 @@ async fn run(args: RunOnnx) {
                         };
                     let output_image_path = output_dir.join(output_image_filename);
                     if !args.no_overwrite || !output_image_path.exists() {
-                        let input_image = image::open(entry.path()).unwrap().to_rgb16();
+                        let input_image = load_image(&entry.path().to_string_lossy()).to_rgb16();
                         let output_image = processor.process_image(input_image).await.unwrap();
                         output_image.save(&output_image_path).unwrap();
 
