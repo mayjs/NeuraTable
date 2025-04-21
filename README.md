@@ -26,3 +26,8 @@ To build this executable, you'll need a stable rust toolchain and Vulkan availab
 If you use NixOS, you can just use `nix develop` to get a shell with the dependencies in place.
 
 To run a network on an example, use `cargo run --release -- <PATH_TO_MODEL.onnx> <PATH_TO_INPUT.jpg> <PATH_TO_OUTPUT.jpg>`
+
+## Included Models
+
+1. Denoising uses the UNet-based model provided by [nind-denoise](https://github.com/trougnouf/nind-denoise)
+

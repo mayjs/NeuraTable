@@ -25,7 +25,7 @@
         rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in {
         devShell = pkgs.mkShell {
-          packages = [rust pkgs.cargo pkgs.rustfmt pkgs.rust-analyzer pkgs.vulkan-loader pkgs.openssl pkgs.pkg-config pkgs.libiconv pkgs.exiftool];
+          packages = [rust pkgs.cargo pkgs.rustfmt pkgs.rust-analyzer pkgs.vulkan-loader pkgs.openssl pkgs.pkg-config pkgs.libiconv pkgs.exiftool pkgs.git-lfs];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [pkgs.vulkan-loader];
         };
       }

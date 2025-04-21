@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPLv3"
 
@@ -11,6 +11,7 @@ wonnx = { git = "https://github.com/mayjs/wonnx.git", branch = "feature/implemen
 image = "0.24.2"
 protobuf = { version = "2.27.1", features = ["with-bytes"] }
 argh = "0.1.11"
+clap = { version = "4.5.30", features = ["derive"] }
 env_logger = "0.10.0"
 log = "0.4.19"
 anyhow = "1.0"
