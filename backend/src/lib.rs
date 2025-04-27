@@ -34,6 +34,7 @@ pub fn convert_raw(raw_path: impl AsRef<Path>, tiff_path: impl AsRef<Path>) {
 
     log::info!("Running darktable to convert raw file...");
     let output = Command::new("darktable-cli")
+        .args(["--apply-custom-presets", "false"])
         .arg(raw_path.as_ref())
         .arg(xml_file.path())
         .arg(tiff_path.as_ref())
