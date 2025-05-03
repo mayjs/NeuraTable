@@ -21,7 +21,6 @@ pub fn convert_raw(raw_path: impl AsRef<Path>, tiff_path: impl AsRef<Path>) {
                                         xmlns:xmp="http://ns.adobe.com/xap/1.0/"
                                         xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
                                         xmlns:darktable="http://darktable.sf.net/"
-                                        exif:DateTimeOriginal="2023:08:20 12:49:58.000"
                                         xmpMM:DerivedFrom="{}">
                                     </rdf:Description>
                                 </rdf:RDF>
@@ -32,12 +31,25 @@ pub fn convert_raw(raw_path: impl AsRef<Path>, tiff_path: impl AsRef<Path>) {
     let mut xml_file = tempfile::NamedTempFile::new().unwrap();
     xml_file.write_all(xml_data.as_bytes()).unwrap();
 
+    // Create a temporary directory for the darktable configuration; We don't want any side-effects of a users configuration
+    let configdir = tempfile::tempdir().unwrap();
     log::info!("Running darktable to convert raw file...");
     let output = Command::new("darktable-cli")
         .args(["--apply-custom-presets", "false"])
         .arg(raw_path.as_ref())
         .arg(xml_file.path())
         .arg(tiff_path.as_ref())
+        .args([
+            "--core",
+            "--conf",
+            "plugins/imageio/format/tiff/bpp=16",
+            "--library",
+            ":memory:",
+            "-t", // Limit to 1 OMP thread as a workaround for https://github.com/darktable-org/darktable/issues/18127
+            "1",
+            "--configdir",
+        ])
+        .arg(configdir.path())
         .output()
         .expect("failed to execute process");
     let stdout = String::from_utf8(output.stdout).expect("Darktable output is not valid UTF-8!");
