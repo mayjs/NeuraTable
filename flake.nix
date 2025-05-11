@@ -19,7 +19,7 @@
         pkgs = import nixpkgs {inherit system;};
         #rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         runtimeDeps = [pkgs.vulkan-loader pkgs.openssl pkgs.libiconv pkgs.exiftool];
-        buildDeps = [pkgs.pkg-config];
+        buildDeps = [pkgs.pkg-config pkgs.makeWrapper];
       in {
         devShell = pkgs.mkShell {
           packages = [pkgs.rust.packages.stable.rustc pkgs.cargo pkgs.rustfmt pkgs.rust-analyzer pkgs.git-lfs] ++ runtimeDeps ++ buildDeps;
@@ -39,6 +39,13 @@
 
             cargoHash = "sha256-8ryANOhOQUfLqfBU4ZhRPjM6yfRFmAWqgzKHDI3SRL8=";
             useFetchCargoVendor = true;
+
+            postFixup = ''
+              patchelf --add-rpath ${pkgs.vulkan-loader}/lib $out/bin/*
+              for executable in $out/bin/*; do
+                wrapProgram $executable --prefix PATH : ${pkgs.exiftool}/bin
+              done
+            '';
 
             meta = {
               description = "NeuraTable is a tool to augment open source photography workflows with machine learning tools";
